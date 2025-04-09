@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import psycopg2
 import os
@@ -80,3 +80,93 @@ def init_db():
 
 with app.app_context():
     init_db()
+
+
+
+@app.route('/tasks', methods=['POST'])
+def create_task(): # iba jeden zaznam buď pre chat_id alebo pre owner_user_id
+    data = request.get_json()
+
+    title = data.get('title')
+    description = data.get('description')
+    date = data.get('date')
+    time = data.get('time')
+    owner_user_id = data.get('owner_user_id')
+    chat_id = data.get('chat_id')
+
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO tasks (title, description, date, time, owner_user_id, chat_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING task_id
+            """, (title, description, date, time, owner_user_id, chat_id))
+            task_id = cursor.fetchone()[0]
+
+    return jsonify({"message": "Task created", "task_id": task_id}), 201
+
+@app.route('/tasks/<int:task_id>', methods=['PUT'])
+def update_task(task_id): #ktokoľvek môže upraviť úlohu, ak je členom chatu alebo je vlastníkom úlohy
+    data = request.get_json()
+
+    title = data.get('title')
+    description = data.get('description')
+    date = data.get('date')
+    time = data.get('time')
+    chat_id = data.get('chat_id')
+
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE tasks
+                SET title = %s,
+                    description = %s,
+                    date = %s,
+                    time = %s,
+                    chat_id = %s
+                WHERE task_id = %s
+            """, (title, description, date, time, chat_id, task_id))
+
+    return jsonify({"message": "Task updated"})
+
+@app.route('/tasks/<int:task_id>', methods=['DELETE'])
+def delete_task(task_id): #ktokoľvek môže zmazať úlohu, ak je členom chatu alebo je vlastníkom úlohy
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM tasks WHERE task_id = %s", (task_id,))
+
+    return jsonify({"message": "Task deleted"})
+
+@app.route('/tasks/<int:user_id>', methods=['GET'])
+def get_user_tasks(user_id):
+    with connection:
+        with connection.cursor() as cursor:
+            # všetky chat_id, kde je user členom
+            cursor.execute("""
+                SELECT chat_id FROM chat_members
+                WHERE member_id = %s
+            """, (user_id,))
+            chat_ids = [row[0] for row in cursor.fetchall()]
+
+            chat_filter = ""
+            if chat_ids:
+                chat_placeholders = ','.join(['%s'] * len(chat_ids))
+                chat_filter = f"OR (chat_id IN ({chat_placeholders}))"
+                values = [user_id] + chat_ids
+            else:
+                values = [user_id]
+            #všetky ulohy pre owner_user_id
+            query = f""" 
+                SELECT * FROM tasks
+                WHERE owner_user_id = %s
+                {chat_filter}
+                ORDER BY date, time
+            """
+
+            cursor.execute(query, values)
+            rows = cursor.fetchall()
+
+            columns = [desc[0] for desc in cursor.description]
+            tasks = [dict(zip(columns, row)) for row in rows]
+
+    return jsonify(tasks)
