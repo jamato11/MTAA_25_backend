@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import psycopg2
 import os
-
+import hashlib
 
 CREATE_USERS_TABLE = """
 CREATE TABLE IF NOT EXISTS users (
@@ -81,7 +81,87 @@ def init_db():
 with app.app_context():
     init_db()
 
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+
+    name = data.get('name')
+    email = data.get('email')
+    password = data.get('password')
+
+    if not name or not email or not password:
+        return jsonify({"message": "Name, email and password are required"}), 400
+
+    hashed_password = hash_password(password)
+
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+                if cursor.fetchone():
+                    return jsonify({"message": "Email already registered"}), 409
+
+                cursor.execute("""
+                    INSERT INTO users (name, email, password)
+                    VALUES (%s, %s, %s)
+                    RETURNING user_id, name, email
+                """, (name, email, hashed_password))
+
+                user_id, name, email = cursor.fetchone()
+
+                return jsonify({
+                    "message": "User registered successfully",
+                    "user": {
+                        "user_id": user_id,
+                        "name": name,
+                        "email": email
+                    }
+                }), 201
+
+    except Exception as error:
+        return jsonify({"message": f"Registration failed: {str(error)}"}), 500
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+
+    email = data.get('email')
+    password = data.get('password')
+
+    if not email or not password:
+        return jsonify({"message": "Email and password are required"}), 400
+
+    hashed_password = hash_password(password)
+
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT user_id, name, email
+                    FROM users
+                    WHERE email = %s AND password = %s
+                """, (email, hashed_password))
+
+                user = cursor.fetchone()
+
+                if not user:
+                    return jsonify({"message": "Invalid email or password"}), 401
+
+                user_id, name, user_email = user
+
+                return jsonify({
+                    "message": "Login successful",
+                    "user": {
+                        "user_id": user_id,
+                        "name": name,
+                        "email": user_email
+                    }
+                }), 200
+
+    except Exception as error:
+        return jsonify({"message": f"Login failed: {str(error)}"}), 500
 
 @app.route('/tasks', methods=['POST'])
 def create_task(): # iba jeden zaznam buď pre chat_id alebo pre owner_user_id
