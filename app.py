@@ -3,14 +3,14 @@ from dotenv import load_dotenv
 import psycopg2
 import os
 import hashlib
-from flask import send_from_directory
-import uuid
+from flask import Response
 from flasgger import Swagger
 
+#vytvaranie tabuliek
 CREATE_USERS_TABLE = """
 CREATE TABLE IF NOT EXISTS users (
     user_id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
+    name TEXT NOT NULL, 
     email TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL
 );
@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS messages (
     recipient_chat_id INTEGER NOT NULL,
     message_type TEXT,
     content TEXT,
-    file_path TEXT,
+    file_data BYTEA,
+    file_name TEXT,
+    file_mimetype TEXT,
     FOREIGN KEY (sender_user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (recipient_chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
 );
@@ -72,10 +74,7 @@ connection = psycopg2.connect(url)
 app = Flask(__name__)
 swagger = Swagger(app)
 
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
+#vytvorenie tabuliek pri spusteni
 def init_db():
     with connection:
         with connection.cursor() as cursor:
@@ -141,7 +140,7 @@ def register():
           properties:
             message:
               type: string
-              example: "Name, email and password are required"
+              example: "Meno, email a heslo sú povinné"
       409:
         description: Zadaný email je už registrovaný
         schema:
@@ -149,15 +148,15 @@ def register():
           properties:
             message:
               type: string
-              example: "Email already registered"
+              example: "Zadaný email je už registrovaný"
       500:
-        description: Chyba na strane servera pri registrácii
+        description: Chyba na pri registrácii
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Registration failed"
+              example: "Chyba pri registrácii"
     """
     data = request.get_json()
 
@@ -166,7 +165,7 @@ def register():
     password = data.get('password')
 
     if not name or not email or not password:
-        return jsonify({"message": "Name, email and password are required"}), 400
+        return jsonify({"message": "Meno, email a heslo sú povinné"}), 400
 
     hashed_password = hash_password(password)
 
@@ -175,7 +174,7 @@ def register():
             with connection.cursor() as cursor:
                 cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
                 if cursor.fetchone():
-                    return jsonify({"message": "Email already registered"}), 409
+                    return jsonify({"message": "Zadaný email je už registrovaný"}), 409
 
                 cursor.execute("""
                     INSERT INTO users (name, email, password)
@@ -186,7 +185,7 @@ def register():
                 user_id, name, email = cursor.fetchone()
 
                 return jsonify({
-                    "message": "User registered successfully",
+                    "message": "Úspešne registrovaný používateľ",
                     "user": {
                         "user_id": user_id,
                         "name": name,
@@ -195,7 +194,8 @@ def register():
                 }), 201
 
     except Exception as error:
-        return jsonify({"message": f"Registration failed: {str(error)}"}), 500
+        return jsonify({"message": f"Chyba pri registrácii: {str(error)}"}), 500
+
 @app.route('/login', methods=['POST'])
 def login():
     """Prihlásenie existujúceho používateľa
@@ -222,7 +222,7 @@ def login():
           properties:
             message:
               type: string
-              example: "Login successful"
+              example: "Úspešné prihlásenie"
             user:
               type: object
               properties:
@@ -242,23 +242,23 @@ def login():
           properties:
             message:
               type: string
-              example: "Email and password are required"
+              example: "Email a heslo sú povinné"
       401:
-        description: Neplatný email alebo heslo
+        description: Nesprávný email alebo heslo
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Invalid email or password"
+              example: "Nesprávny email alebo heslo"
       500:
-        description: Chyba na strane servera pri prihlásení
+        description: Chyba na pri prihlásení
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Login failed"
+              example: "Chyba pri prihlásení"
     """
     data = request.get_json()
 
@@ -266,7 +266,7 @@ def login():
     password = data.get('password')
 
     if not email or not password:
-        return jsonify({"message": "Email and password are required"}), 400
+        return jsonify({"message": "Email a heslo sú povinné"}), 400
 
     hashed_password = hash_password(password)
 
@@ -282,12 +282,12 @@ def login():
                 user = cursor.fetchone()
 
                 if not user:
-                    return jsonify({"message": "Invalid email or password"}), 401
+                    return jsonify({"message": "Nesprávny email alebo heslo"}), 401
 
                 user_id, name, user_email = user
 
                 return jsonify({
-                    "message": "Login successful",
+                    "message": "Úspešné prihlásenie",
                     "user": {
                         "user_id": user_id,
                         "name": name,
@@ -296,7 +296,7 @@ def login():
                 }), 200
 
     except Exception as error:
-        return jsonify({"message": f"Login failed: {str(error)}"}), 500
+        return jsonify({"message": f"Chyba pri prihlásení: {str(error)}"}), 500
 
 @app.route('/tasks', methods=['POST'])
 def create_task(): # iba jeden zaznam buď pre chat_id alebo pre owner_user_id
@@ -339,20 +339,20 @@ def create_task(): # iba jeden zaznam buď pre chat_id alebo pre owner_user_id
           properties:
             message:
               type: string
-              example: "Task created"
+              example: "Úloha úspešne vytvorená"
             task_id:
               type: integer
               example: 1
       400:
-        description: Chýbajúce povinné polia alebo neplatné vstupné dáta
+        description: Chýbajúci názov alebo dátum
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Title is required"
+              example: "Chýbajúci názov alebo dátum"
       500:
-        description: Chyba na strane servera pri vytváraní úlohy
+        description: Chyba pri vytváraní úlohy
         schema:
           type: object
           properties:
@@ -369,27 +369,35 @@ def create_task(): # iba jeden zaznam buď pre chat_id alebo pre owner_user_id
     owner_user_id = data.get('owner_user_id')
     chat_id = data.get('chat_id')
 
-    with connection:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO tasks (title, description, date, time, owner_user_id, chat_id)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING task_id
-            """, (title, description, date, time, owner_user_id, chat_id))
-            task_id = cursor.fetchone()[0]
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO tasks (title, description, date, time, owner_user_id, chat_id)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING task_id
+                """, (title, description, date, time, owner_user_id, chat_id))
+                task_id = cursor.fetchone()[0]
 
-    return jsonify({"message": "Task created", "task_id": task_id}), 201
+                if not title or not date:
+                    return jsonify({"message": "Chýbajúci názov alebo dátum"}), 401
+
+                return jsonify({"message": "Úloha úspešne vytvorená", "task_id": task_id}), 201
+
+    except Exception as error:
+        return jsonify({"message": f"Chyba pri vytváraní úlohy: {str(error)}"}), 500
+
 
 @app.route('/tasks/<int:task_id>', methods=['PUT'])
 def update_task(task_id): #ktokoľvek môže upraviť úlohu, ak je členom chatu alebo je vlastníkom úlohy
-    """Aktualizácia existujúcej úlohy
+    """Úprava existujúcej úlohy
     ---
     parameters:
       - name: task_id
         in: path
         type: integer
         required: true
-        description: ID úlohy na aktualizáciu
+        description: ID úlohy na úpravu
       - name: body
         in: body
         required: true
@@ -415,29 +423,21 @@ def update_task(task_id): #ktokoľvek môže upraviť úlohu, ak je členom chat
               description: ID chatu, do ktorého úloha patrí
     responses:
       200:
-        description: Úloha úspešne aktualizovaná
+        description: Úloha úspešne upravená
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Task updated"
-      404:
-        description: Úloha s daným ID nebola nájdená
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Task not found"
+              example: "Úloha úspešne upravená"
       500:
-        description: Chyba na strane servera pri aktualizácii úlohy
+        description: Chyba pri úprave úlohy
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Failed to update task"
+              example: "Chyba pri úprave úlohy"
     """
     data = request.get_json()
 
@@ -447,19 +447,23 @@ def update_task(task_id): #ktokoľvek môže upraviť úlohu, ak je členom chat
     time = data.get('time')
     chat_id = data.get('chat_id')
 
-    with connection:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                UPDATE tasks
-                SET title = %s,
-                    description = %s,
-                    date = %s,
-                    time = %s,
-                    chat_id = %s
-                WHERE task_id = %s
-            """, (title, description, date, time, chat_id, task_id))
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE tasks
+                    SET title = %s,
+                        description = %s,
+                        date = %s,
+                        time = %s,
+                        chat_id = %s
+                    WHERE task_id = %s
+                """, (title, description, date, time, chat_id, task_id))
 
-    return jsonify({"message": "Task updated"})
+        return jsonify({"message": "Úloha úspešne aktualizovaná"})
+
+    except Exception as error:
+        return jsonify({"message": f"Chyba pri úprave úlohy: {str(error)}"}), 500
 
 @app.route('/tasks/<int:task_id>', methods=['DELETE'])
 def delete_task(task_id): #ktokoľvek môže zmazať úlohu, ak je členom chatu alebo je vlastníkom úlohy
@@ -479,29 +483,25 @@ def delete_task(task_id): #ktokoľvek môže zmazať úlohu, ak je členom chatu
           properties:
             message:
               type: string
-              example: "Task deleted"
-      404:
-        description: Úloha s daným ID nebola nájdená
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Task not found"
+              example: "Úloha úspešne odstránená"
       500:
-        description: Chyba na strane servera pri odstraňovaní úlohy
+        description: Chyba pri odstraňovaní úlohy
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Failed to delete tass"
+              example: "Chyba pri odstraňovaní úlohy"
     """
-    with connection:
-        with connection.cursor() as cursor:
-            cursor.execute("DELETE FROM tasks WHERE task_id = %s", (task_id,))
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM tasks WHERE task_id = %s", (task_id,))
 
-    return jsonify({"message": "Task deleted"})
+        return jsonify({"message": "Úloha úspešne odstránená"})
+
+    except Exception as error:
+        return jsonify({"message": f"Chyba pri odstraňovaní úlohy: {str(error)}"}), 500
 
 @app.route('/tasks/<int:user_id>', methods=['GET'])
 def get_user_tasks(user_id):
@@ -545,45 +545,50 @@ def get_user_tasks(user_id):
                 type: integer
                 example: null
       500:
-        description: Chyba na strane servera pri získavaní úloh
+        description: Chyba pri získavaní úloh
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Failed to retrieve tasks"
+              example: "Chyba pri získavaní úloh"
     """
-    with connection:
-        with connection.cursor() as cursor:
-            # všetky chat_id, kde je user členom
-            cursor.execute("""
-                SELECT chat_id FROM chat_members
-                WHERE member_id = %s
-            """, (user_id,))
-            chat_ids = [row[0] for row in cursor.fetchall()]
 
-            chat_filter = ""
-            if chat_ids:
-                chat_placeholders = ','.join(['%s'] * len(chat_ids))
-                chat_filter = f"OR (chat_id IN ({chat_placeholders}))"
-                values = [user_id] + chat_ids
-            else:
-                values = [user_id]
-            #všetky ulohy pre owner_user_id
-            query = f""" 
-                SELECT * FROM tasks
-                WHERE owner_user_id = %s
-                {chat_filter}
-                ORDER BY date, time
-            """
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                # všetky chat_id, kde je user členom
+                cursor.execute("""
+                    SELECT chat_id FROM chat_members
+                    WHERE member_id = %s
+                """, (user_id,))
+                chat_ids = [row[0] for row in cursor.fetchall()]
 
-            cursor.execute(query, values)
-            rows = cursor.fetchall()
+                chat_filter = ""
+                if chat_ids:
+                    chat_placeholders = ','.join(['%s'] * len(chat_ids))
+                    chat_filter = f"OR (chat_id IN ({chat_placeholders}))"
+                    values = [user_id] + chat_ids
+                else:
+                    values = [user_id]
+                #všetky ulohy pre owner_user_id
+                query = f""" 
+                    SELECT * FROM tasks
+                    WHERE owner_user_id = %s
+                    {chat_filter}
+                    ORDER BY date, time
+                """
 
-            columns = [desc[0] for desc in cursor.description]
-            tasks = [dict(zip(columns, row)) for row in rows]
+                cursor.execute(query, values)
+                rows = cursor.fetchall()
 
-    return jsonify(tasks)
+                columns = [desc[0] for desc in cursor.description]
+                tasks = [dict(zip(columns, row)) for row in rows]
+
+        return jsonify(tasks)
+
+    except Exception as error:
+        return jsonify({"message": f"Chyba pri získavaní úloh: {str(error)}"}), 500
 
 @app.route('/chats', methods=['POST'])
 def create_chat():
@@ -616,7 +621,7 @@ def create_chat():
           properties:
             message:
               type: string
-              example: "Chat created successfully"
+              example: "Chat úspešne vytvorený"
             chat:
               type: object
               properties:
@@ -629,44 +634,24 @@ def create_chat():
                 image:
                   type: string
                   example: "URL_obrazku_alebo_base64"
-      400:
-        description: Chýbajúce povinné polia
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Chat name and creator ID are required"
-      404:
-        description: Používateľ s daným creator_id nebol nájdený
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Creator not found"
       500:
-        description: Chyba na strane servera pri vytváraní chatu
+        description: Chyba pri vytváraní chatu
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Failed to create chas"
+              example: "Chyba pri vytváraní chatu"
     """
     data = request.get_json()
 
     chat_name = data.get('chat_name')
-    image = data.get('image')  # This could be a URL or base64 encoded image
-    creator_id = data.get('creator_id')  # User who's creating the chat
-
-    if not chat_name or not creator_id:
-        return jsonify({"message": "Chat name and creator ID are required"}), 400
+    image = data.get('image')
+    creator_id = data.get('creator_id')
 
     try:
         with connection:
             with connection.cursor() as cursor:
-                # Create new chat
                 cursor.execute("""
                     INSERT INTO chats (chat_name, image)
                     VALUES (%s, %s)
@@ -675,14 +660,13 @@ def create_chat():
 
                 chat_id = cursor.fetchone()[0]
 
-                # Add creator as the first member
                 cursor.execute("""
                     INSERT INTO chat_members (chat_id, member_id)
                     VALUES (%s, %s)
                 """, (chat_id, creator_id))
 
                 return jsonify({
-                    "message": "Chat created successfully",
+                    "message": "Chat úspešne vytvorený",
                     "chat": {
                         "chat_id": chat_id,
                         "chat_name": chat_name,
@@ -724,18 +708,17 @@ def get_user_chats(user_id):
                     type: string
                     example: "URL_obrazku_alebo_base64"
       500:
-        description: Chyba na strane servera pri získavaní chatov
+        description: Chyba pri získavaní chatov
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Failed to retrieve chats"
+              example: "Chyba pri získavaní chatov"
     """
     try:
         with connection:
             with connection.cursor() as cursor:
-                # Get all chats that the user is a member of
                 cursor.execute("""
                     SELECT c.chat_id, c.chat_name, c.image
                     FROM chats c
@@ -749,7 +732,7 @@ def get_user_chats(user_id):
                 return jsonify({"chats": chats}), 200
 
     except Exception as error:
-        return jsonify({"message": f"Failed to retrieve chats: {str(error)}"}), 500
+        return jsonify({"message": f"Chyba pri získavaní chatov: {str(error)}"}), 500
 
 @app.route('/chats/<int:chat_id>', methods=['GET'])
 def get_chat(chat_id):
@@ -776,22 +759,14 @@ def get_chat(chat_id):
             image:
               type: string
               example: "URL_obrazku_alebo_base64"
-      404:
-        description: Chat s daným ID nebol nájdený
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Chat not found"
       500:
-        description: Chyba na strane servera pri získavaní chatu
+        description: Chyba pri získavaní chatu
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Failed to retrieve chas"
+              example: "Chyba pri získavaní chatu"
     """
     try:
         with connection:
@@ -804,15 +779,12 @@ def get_chat(chat_id):
 
                 chat = cursor.fetchone()
 
-                if not chat:
-                    return jsonify({"message": "Chat not found"}), 404
-
                 chat_data = {"chat_id": chat[0], "chat_name": chat[1], "image": chat[2]}
 
                 return jsonify(chat_data), 200
 
     except Exception as error:
-        return jsonify({"message": f"Failed to retrieve chat: {str(error)}"}), 500
+        return jsonify({"message": f"Chyba pri získavaní chatu: {str(error)}"}), 500
 
 @app.route('/chats/<int:chat_id>', methods=['PUT'])
 def update_chat(chat_id):
@@ -838,13 +810,13 @@ def update_chat(chat_id):
               description: Nová URL alebo base64 kód obrázka chatu
     responses:
       200:
-        description: Chat úspešne aktualizovaný
+        description: Chat úspešne upravený
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Chat updated successfully"
+              example: "Chat úspešne upravený"
             chat:
               type: object
               properties:
@@ -857,22 +829,14 @@ def update_chat(chat_id):
                 image:
                   type: string
                   example: "Nová_URL_alebo_base64"
-      404:
-        description: Chat s daným ID nebol nájdený
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Chat not found"
       500:
-        description: Chyba na strane servera pri aktualizácii chatu
+        description: Chyba pri upravení chatu
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Failed to update chas"
+              example: "Chyba pri upravení chatu"
     """
     data = request.get_json()
 
@@ -891,11 +855,8 @@ def update_chat(chat_id):
 
                 updated_chat = cursor.fetchone()
 
-                if not updated_chat:
-                    return jsonify({"message": "Chat not found"}), 404
-
                 return jsonify({
-                    "message": "Chat updated successfully",
+                    "message": "Chat úspešne upravený",
                     "chat": {
                         "chat_id": updated_chat[0],
                         "chat_name": updated_chat[1],
@@ -904,7 +865,7 @@ def update_chat(chat_id):
                 }), 200
 
     except Exception as error:
-        return jsonify({"message": f"Failed to update chat: {str(error)}"}), 500
+        return jsonify({"message": f"Chyba pri upravení chatu: {str(error)}"}), 500
 
 @app.route('/chats/<int:chat_id>', methods=['DELETE'])
 def delete_chat(chat_id):
@@ -924,23 +885,15 @@ def delete_chat(chat_id):
           properties:
             message:
               type: string
-              example: "Chat deleted successfully"
-      404:
-        description: Chat s daným ID nebol nájdený
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Chat not found"
+              example: "Chat úspešne odstránený"
       500:
-        description: Chyba na strane servera pri odstraňovaní chatu
+        description: Chyba pri odstraňovaní chatu
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Failed to delete chas"
+              example: "Chyba pri odstraňovaní chatu"
     """
     try:
         with connection:
@@ -951,15 +904,10 @@ def delete_chat(chat_id):
                     RETURNING chat_id
                 """, (chat_id,))
 
-                deleted_chat = cursor.fetchone()
-
-                if not deleted_chat:
-                    return jsonify({"message": "Chat not found"}), 404
-
-                return jsonify({"message": "Chat deleted successfully"}), 200
+                return jsonify({"message": "Chat úspešne odstránený"}), 200
 
     except Exception as error:
-        return jsonify({"message": f"Failed to delete chat: {str(error)}"}), 500
+        return jsonify({"message": f"Chyba pri odstraňovaní chatu: {str(error)}"}), 500
 
 @app.route('/chats/<int:chat_id>/members', methods=['POST'])
 def add_chat_member(chat_id):
@@ -994,22 +942,6 @@ def add_chat_member(chat_id):
             membership_id:
               type: integer
               example: 3
-      400:
-        description: Chýbajúce povinné polia
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Member ID is required"
-      404:
-        description: Chat alebo používateľ s daným ID nebol nájdený
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Chat not found"
       409:
         description: Používateľ je už členom tohto chatu
         schema:
@@ -1017,7 +949,7 @@ def add_chat_member(chat_id):
           properties:
             message:
               type: string
-              example: "User is already a member of this chat"
+              example: "Používateľ je už členom tohto chatu"
       500:
         description: Chyba na strane servera pri pridávaní člena do chatu
         schema:
@@ -1025,7 +957,7 @@ def add_chat_member(chat_id):
           properties:
             message:
               type: string
-              example: "Failed to add member to chas"
+              example: "Chyba na strane servera pri pridávaní člena do chatu"
     """
     data = request.get_json()
 
@@ -1037,21 +969,16 @@ def add_chat_member(chat_id):
     try:
         with connection:
             with connection.cursor() as cursor:
-                # Check if user exists
                 cursor.execute("SELECT user_id FROM users WHERE user_id = %s", (member_id,))
-                if not cursor.fetchone():
-                    return jsonify({"message": "User not found"}), 404
 
-                # Check if member already exists in the chat
                 cursor.execute("""
                     SELECT membership_id FROM chat_members
                     WHERE chat_id = %s AND member_id = %s
                 """, (chat_id, member_id))
 
                 if cursor.fetchone():
-                    return jsonify({"message": "User is already a member of this chat"}), 409
+                    return jsonify({"message": "Používateľ je už členom tohto chatu"}), 409
 
-                # Add member to the chat
                 cursor.execute("""
                     INSERT INTO chat_members (chat_id, member_id)
                     VALUES (%s, %s)
@@ -1061,12 +988,12 @@ def add_chat_member(chat_id):
                 membership_id = cursor.fetchone()[0]
 
                 return jsonify({
-                    "message": "Member added to chat successfully",
+                    "message": "Používateľ úspešne pridaný do chatu",
                     "membership_id": membership_id
                 }), 201
 
     except Exception as error:
-        return jsonify({"message": f"Failed to add member to chat: {str(error)}"}), 500
+        return jsonify({"message": f"Chyba na strane servera pri pridávaní člena do chatu: {str(error)}"}), 500
 
 @app.route('/chats/<int:chat_id>/members', methods=['GET'])
 def get_chat_members(chat_id):
@@ -1102,13 +1029,13 @@ def get_chat_members(chat_id):
                     type: integer
                     example: 3
       500:
-        description: Chyba na strane servera pri získavaní členov chatu
+        description: Chyba pri získavaní členov chatu
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Failed to retrieve chat members"
+              example: "Chyba pri získavaní členov chatu"
     """
     try:
         with connection:
@@ -1131,7 +1058,7 @@ def get_chat_members(chat_id):
                 return jsonify({"members": members}), 200
 
     except Exception as error:
-        return jsonify({"message": f"Failed to retrieve chat members: {str(error)}"}), 500
+        return jsonify({"message": f"Chyba pri získavaní členov chatu: {str(error)}"}), 500
 
 @app.route('/chats/members/<int:membership_id>', methods=['DELETE'])
 def remove_chat_member(membership_id):
@@ -1151,17 +1078,9 @@ def remove_chat_member(membership_id):
           properties:
             message:
               type: string
-              example: "Member removed from chat successfully"
-      404:
-        description: Členstvo s daným ID nebolo nájdené
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Membership not found"
+              example: "Používateľ úspešne odstránený z chatu"
       500:
-        description: Chyba na strane servera pri odstraňovaní člena z chatu
+        description: Chyba pri odstraňovaní člena z chatu
         schema:
           type: object
           properties:
@@ -1178,21 +1097,13 @@ def remove_chat_member(membership_id):
                     RETURNING membership_id
                 """, (membership_id,))
 
-                deleted_membership = cursor.fetchone()
-
-                if not deleted_membership:
-                    return jsonify({"message": "Membership not found"}), 404
-
-                return jsonify({"message": "Member removed from chat successfully"}), 200
+                return jsonify({"message": "Používateľ úspešne odstránený z chatu"}), 200
 
     except Exception as error:
-        return jsonify({"message": f"Failed to remove member from chat: {str(error)}"}), 500
+        return jsonify({"message": f"Chyba pri odstraňovaní člena z chatu: {str(error)}"}), 500
 
-def save_file(file):
-    filename = str(uuid.uuid4()) + '-' + file.filename
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    file.save(filepath)
-    return filepath
+def get_binary_file_data(file):
+    return file.read()
 
 @app.route('/messages', methods=['POST'])
 def create_message():
@@ -1231,34 +1142,18 @@ def create_message():
           properties:
             message:
               type: string
-              example: "Message sent successfully"
+              example: "Správa úspešne odoslaná"
             message_id:
               type: integer
               example: 1
-      400:
-        description: Chýbajúce povinné polia
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Sender ID and recipient chat ID are required"
-      403:
-        description: Používateľ nie je členom cieľového chatu
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "User is not a member of this chat"
       500:
-        description: Chyba na strane servera pri odosielaní správy
+        description: Chyba pri odosielaní správy
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Failed to send messags"
+              example: "Chyba pri odosielaní správy"
     """
     message_type = request.form.get('message_type', 'text')
     sender_user_id = request.form.get('sender_user_id')
@@ -1268,12 +1163,16 @@ def create_message():
     if not sender_user_id or not recipient_chat_id:
         return jsonify({"message": "Sender ID and recipient chat ID are required"}), 400
 
-    file_path = None
+    file_data = None
+    file_name = None
+    file_mimetype = None
 
     try:
         if 'file' in request.files and request.files['file'].filename:
             file = request.files['file']
-            file_path = save_file(file)
+            file_data = get_binary_file_data(file)
+            file_name = file.filename
+            file_mimetype = file.content_type
 
         with connection:
             with connection.cursor() as cursor:
@@ -1282,24 +1181,21 @@ def create_message():
                     WHERE chat_id = %s AND member_id = %s
                 """, (recipient_chat_id, sender_user_id))
 
-                if not cursor.fetchone():
-                    return jsonify({"message": "User is not a member of this chat"}), 403
-
                 cursor.execute("""
-                    INSERT INTO messages (sender_user_id, recipient_chat_id, message_type, content, file_path)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO messages (sender_user_id, recipient_chat_id, message_type, content, file_data, file_name, file_mimetype)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     RETURNING message_id
-                """, (sender_user_id, recipient_chat_id, message_type, content, file_path))
+                """, (sender_user_id, recipient_chat_id, message_type, content, file_data, file_name, file_mimetype))
 
                 message_id = cursor.fetchone()[0]
 
                 return jsonify({
-                    "message": "Message sent successfully",
+                    "message": "Správa úspešne odoslaná",
                     "message_id": message_id
                 }), 201
 
     except Exception as error:
-        return jsonify({"message": f"Failed to send message: {str(error)}"}), 500
+        return jsonify({"message": f"Chyba pri odosielaní správy: {str(error)}"}), 500
 
 @app.route('/chats/<int:chat_id>/messages', methods=['GET'])
 def get_chat_messages(chat_id):
@@ -1341,20 +1237,20 @@ def get_chat_messages(chat_id):
                     type: string
                     example: null
       500:
-        description: Chyba na strane servera pri získavaní správ chatu
+        description: Chyba pri získavaní správ z chatu
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Failed to retrieve messages"
+              example: "Chyba pri získavaní správ z chatu"
     """
     try:
         with connection:
             with connection.cursor() as cursor:
                 cursor.execute("""
                     SELECT m.message_id, m.sender_user_id, u.name as sender_name, 
-                           m.message_type, m.content, m.file_path
+                           m.message_type, m.content, m.file_name, m.file_mimetype
                     FROM messages m
                     JOIN users u ON m.sender_user_id = u.user_id
                     WHERE m.recipient_chat_id = %s
@@ -1368,14 +1264,68 @@ def get_chat_messages(chat_id):
                     "sender_name": row[2],
                     "message_type": row[3],
                     "content": row[4],
-                    "file_path": row[5]
+                    "file_name": row[5],
+                    "file_mimetype": row[6]
                 } for row in rows]
 
                 return jsonify({"messages": messages}), 200
 
     except Exception as error:
-        return jsonify({"message": f"Failed to retrieve messages: {str(error)}"}), 500
+        return jsonify({"message": f"Chyba pri získavaní správ z chatu: {str(error)}"}), 500
+@app.route('/messages/<int:message_id>/file', methods=['GET'])
+def get_file(message_id):
+    """Stiahnutie súboru z konkrétnej správy
+    ---
+    parameters:
+      - name: message_id
+        in: path
+        type: integer
+        required: true
+        description: ID správy obsahujúcej súbor
+    responses:
+      200:
+        description: Binárny obsah súboru
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      404:
+        description: Správa alebo súbor nebol nájdený
+        schema:
+          type: object
+          properties:
+            message:
+              type: string
+              example: "Správa alebo súbor nebol nájdený"
+      500:
+        description: Chyba pri získavaní správy/súboru
+        schema:
+          type: object
+          properties:
+            message:
+              type: string
+              example: "Chyba pri získavaní správy/súboru"
+    """
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT file_data, file_name, file_mimetype
+                    FROM messages
+                    WHERE message_id = %s AND file_data IS NOT NULL
+                """, (message_id,))
 
-@app.route('/uploads/<path:filename>', methods=['GET'])
-def download_file(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+                result = cursor.fetchone()
+                if not result or not result[0]:
+                    return jsonify({"message": "Správa alebo súbor nebol nájdený"}), 404
+
+                file_data, file_name, file_mimetype = result
+
+                response = Response(file_data)
+                response.headers.set('Content-Type', file_mimetype or 'application/octet-stream')
+                response.headers.set('Content-Disposition', f'attachment; filename="{file_name}"')
+                return response
+
+    except Exception as error:
+        return jsonify({"message": f"Chyba pri získavaní správy/súboru: {str(error)}"}), 500
