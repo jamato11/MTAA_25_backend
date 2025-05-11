@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import psycopg2
 import os
 import hashlib
+import datetime
 from flask import Response
 from flasgger import Swagger
 
@@ -29,8 +30,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     task_id SERIAL PRIMARY KEY,
     title TEXT NOT NULL,
     description TEXT,
-    date DATE,
-    time TIME,
+    dateDeadline DATE,
+    timeDeadline TIME,
     owner_user_id INTEGER NOT NULL,
     chat_id INTEGER,
     FOREIGN KEY (owner_user_id) REFERENCES users(user_id) ON DELETE CASCADE,
@@ -565,14 +566,13 @@ def get_user_tasks(user_id):
                 chat_ids = [row[0] for row in cursor.fetchall()]
 
                 chat_filter = ""
+                values = [user_id]
                 if chat_ids:
-                    chat_placeholders = ','.join(['%s'] * len(chat_ids))
-                    chat_filter = f"OR (chat_id IN ({chat_placeholders}))"
-                    values = [user_id] + chat_ids
-                else:
-                    values = [user_id]
-                #všetky ulohy pre owner_user_id
-                query = f""" 
+                    placeholders = ','.join(['%s'] * len(chat_ids))
+                    chat_filter = f" OR (chat_id IN ({placeholders}))"
+                    values += chat_ids
+
+                query = f"""
                     SELECT * FROM tasks
                     WHERE owner_user_id = %s
                     {chat_filter}
@@ -581,11 +581,18 @@ def get_user_tasks(user_id):
 
                 cursor.execute(query, values)
                 rows = cursor.fetchall()
-
                 columns = [desc[0] for desc in cursor.description]
-                tasks = [dict(zip(columns, row)) for row in rows]
 
-        return jsonify(tasks)
+                tasks = []
+                for row in rows:
+                    task = dict(zip(columns, row))
+                    if isinstance(task.get('date'), (datetime.date,)):
+                        task['date'] = task['date'].isoformat()
+                    if isinstance(task.get('time'), (datetime.time,)):
+                        task['time'] = task['time'].strftime('%H:%M:%S')
+                    tasks.append(task)
+
+        return jsonify(tasks), 200
 
     except Exception as error:
         return jsonify({"message": f"Chyba pri získavaní úloh: {str(error)}"}), 500
