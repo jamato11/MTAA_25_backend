@@ -6,6 +6,7 @@ import hashlib
 import datetime
 from flask import Response
 from flasgger import Swagger
+from flask_socketio import SocketIO, send, emit, join_room, leave_room
 
 #vytvaranie tabuliek
 CREATE_USERS_TABLE = """
@@ -20,8 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE_CHATS_TABLE = """
 CREATE TABLE IF NOT EXISTS chats (
     chat_id SERIAL PRIMARY KEY,
-    chat_name TEXT NOT NULL,
-    image TEXT
+    chat_name TEXT NOT NULL
 );
 """
 
@@ -30,8 +30,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     task_id SERIAL PRIMARY KEY,
     title TEXT NOT NULL,
     description TEXT,
-    dateDeadline DATE,
-    timeDeadline TIME,
+    date DATE,
+    time TIME,
     owner_user_id INTEGER NOT NULL,
     chat_id INTEGER,
     FOREIGN KEY (owner_user_id) REFERENCES users(user_id) ON DELETE CASCADE,
@@ -74,6 +74,7 @@ connection = psycopg2.connect(url)
 
 app = Flask(__name__)
 swagger = Swagger(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 #vytvorenie tabuliek pri spusteni
 def init_db():
@@ -611,9 +612,6 @@ def create_chat():
             chat_name:
               type: string
               description: Názov chatu
-            image:
-              type: string
-              description: URL alebo base64 kód obrázka chatu
             creator_id:
               type: integer
               description: ID používateľa, ktorý chat vytvára
@@ -638,9 +636,6 @@ def create_chat():
                 chat_name:
                   type: string
                   example: "Názov chatu"
-                image:
-                  type: string
-                  example: "URL_obrazku_alebo_base64"
       500:
         description: Chyba pri vytváraní chatu
         schema:
@@ -653,17 +648,16 @@ def create_chat():
     data = request.get_json()
 
     chat_name = data.get('chat_name')
-    image = data.get('image')
     creator_id = data.get('creator_id')
 
     try:
         with connection:
             with connection.cursor() as cursor:
                 cursor.execute("""
-                    INSERT INTO chats (chat_name, image)
-                    VALUES (%s, %s)
+                    INSERT INTO chats (chat_name)
+                    VALUES (%s)
                     RETURNING chat_id
-                """, (chat_name, image))
+                """, (chat_name,))
 
                 chat_id = cursor.fetchone()[0]
 
@@ -677,7 +671,6 @@ def create_chat():
                     "chat": {
                         "chat_id": chat_id,
                         "chat_name": chat_name,
-                        "image": image
                     }
                 }), 201
 
@@ -711,9 +704,6 @@ def get_user_chats(user_id):
                   chat_name:
                     type: string
                     example: "Názov chatu"
-                  image:
-                    type: string
-                    example: "URL_obrazku_alebo_base64"
       500:
         description: Chyba pri získavaní chatov
         schema:
@@ -727,14 +717,14 @@ def get_user_chats(user_id):
         with connection:
             with connection.cursor() as cursor:
                 cursor.execute("""
-                    SELECT c.chat_id, c.chat_name, c.image
+                    SELECT c.chat_id, c.chat_name
                     FROM chats c
                     JOIN chat_members cm ON c.chat_id = cm.chat_id
                     WHERE cm.member_id = %s
                 """, (user_id,))
 
                 rows = cursor.fetchall()
-                chats = [{"chat_id": row[0], "chat_name": row[1], "image": row[2]} for row in rows]
+                chats = [{"chat_id": row[0], "chat_name": row[1]} for row in rows]
 
                 return jsonify({"chats": chats}), 200
 
@@ -763,9 +753,6 @@ def get_chat(chat_id):
             chat_name:
               type: string
               example: "Názov chatu"
-            image:
-              type: string
-              example: "URL_obrazku_alebo_base64"
       500:
         description: Chyba pri získavaní chatu
         schema:
@@ -779,14 +766,14 @@ def get_chat(chat_id):
         with connection:
             with connection.cursor() as cursor:
                 cursor.execute("""
-                    SELECT chat_id, chat_name, image
+                    SELECT chat_id, chat_name
                     FROM chats
                     WHERE chat_id = %s
                 """, (chat_id,))
 
                 chat = cursor.fetchone()
 
-                chat_data = {"chat_id": chat[0], "chat_name": chat[1], "image": chat[2]}
+                chat_data = {"chat_id": chat[0], "chat_name": chat[1]}
 
                 return jsonify(chat_data), 200
 
@@ -812,9 +799,6 @@ def update_chat(chat_id):
             chat_name:
               type: string
               description: Nový názov chatu
-            image:
-              type: string
-              description: Nová URL alebo base64 kód obrázka chatu
     responses:
       200:
         description: Chat úspešne upravený
@@ -833,9 +817,6 @@ def update_chat(chat_id):
                 chat_name:
                   type: string
                   example: "Nový názov chatu"
-                image:
-                  type: string
-                  example: "Nová_URL_alebo_base64"
       500:
         description: Chyba pri upravení chatu
         schema:
@@ -848,17 +829,16 @@ def update_chat(chat_id):
     data = request.get_json()
 
     chat_name = data.get('chat_name')
-    image = data.get('image')
 
     try:
         with connection:
             with connection.cursor() as cursor:
                 cursor.execute("""
                     UPDATE chats
-                    SET chat_name = %s, image = %s
+                    SET chat_name = %s
                     WHERE chat_id = %s
-                    RETURNING chat_id, chat_name, image
-                """, (chat_name, image, chat_id))
+                    RETURNING chat_id, chat_name
+                """, (chat_name, chat_id))
 
                 updated_chat = cursor.fetchone()
 
@@ -866,8 +846,7 @@ def update_chat(chat_id):
                     "message": "Chat úspešne upravený",
                     "chat": {
                         "chat_id": updated_chat[0],
-                        "chat_name": updated_chat[1],
-                        "image": updated_chat[2]
+                        "chat_name": updated_chat[1]
                     }
                 }), 200
 
@@ -1002,6 +981,24 @@ def add_chat_member(chat_id):
     except Exception as error:
         return jsonify({"message": f"Chyba na strane servera pri pridávaní člena do chatu: {str(error)}"}), 500
 
+@app.route('/users', methods=['GET'])
+def get_all_users():
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT user_id, name, email FROM users")
+                rows = cursor.fetchall()
+
+                users = [{
+                    "user_id": row[0],
+                    "name": row[1],
+                    "email": row[2]
+                } for row in rows]
+
+                return jsonify({"users": users}), 200
+    except Exception as e:
+        return jsonify({"message": f"Chyba: {str(e)}"}), 500
+
 @app.route('/chats/<int:chat_id>/members', methods=['GET'])
 def get_chat_members(chat_id):
     """Získanie zoznamu členov daného chatu
@@ -1067,6 +1064,73 @@ def get_chat_members(chat_id):
     except Exception as error:
         return jsonify({"message": f"Chyba pri získavaní členov chatu: {str(error)}"}), 500
 
+@app.route('/chats/memberships', methods=['GET'])
+def get_membership_id():
+    """Získanie membership_id na základe chatId a memberId
+    ---
+    parameters:
+      - name: chat_id
+        in: query
+        type: integer
+        required: true
+        description: ID chatu
+      - name: member_id
+        in: query
+        type: integer
+        required: true
+        description: ID člena (používateľa)
+    responses:
+      200:
+        description: membership_id nájdené
+        schema:
+          type: object
+          properties:
+            membership_id:
+              type: integer
+              example: 1
+      404:
+        description: Člen neexistuje v tomto chate
+        schema:
+          type: object
+          properties:
+            message:
+              type: string
+              example: "Člen neexistuje v tomto chate"
+      500:
+        description: Chyba pri získavaní membership_id
+        schema:
+          type: object
+          properties:
+            message:
+              type: string
+              example: "Chyba pri získavaní membership_id"
+    """
+    chat_id = request.args.get('chat_id', type=int)
+    member_id = request.args.get('member_id', type=int) or request.args.get('user_id', type=int)
+
+    if not chat_id or not member_id:
+        return jsonify({"message": "Chat ID a Member ID sú povinné parametre"}), 400
+
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                # Získanie membership_id na základe chat_id a member_id
+                cursor.execute("""
+                    SELECT membership_id
+                    FROM chat_members
+                    WHERE chat_id = %s AND member_id = %s
+                """, (chat_id, member_id))
+                result = cursor.fetchone()
+
+                if result:
+                    return jsonify({"membership_id": result[0]}), 200
+                else:
+                    return jsonify({"message": "Člen neexistuje v tomto chate"}), 404
+
+    except Exception as error:
+        return jsonify({"message": f"Chyba pri získavaní membership_id: {str(error)}"}), 500
+
+
 @app.route('/chats/members/<int:membership_id>', methods=['DELETE'])
 def remove_chat_member(membership_id):
     """Odstránenie používateľa z chatu
@@ -1114,95 +1178,94 @@ def get_binary_file_data(file):
 
 @app.route('/messages', methods=['POST'])
 def create_message():
-    """Odoslanie novej správy do chatu
+    """
+    Odoslanie novej správy do chatu
+    Uloží správu do databázy a odošle ju cez WebSocket ostatným klientom v danom chate.
     ---
+    tags:
+      - Chat
     parameters:
-      - name: sender_user_id
-        in: formData
-        type: integer
+      - name: body
+        in: body
         required: true
-        description: ID odosielateľa
-      - name: recipient_chat_id
-        in: formData
-        type: integer
-        required: true
-        description: ID cieľového chatu
-      - name: message_type
-        in: formData
-        type: string
-        description: Typ správy ('text' alebo iný pre súbor)
-      - name: content
-        in: formData
-        type: string
-        description: Text správy (vyžadované pre message_type 'text')
-      - name: file
-        in: formData
-        type: file
-        description: Súbor na odoslanie (vyžadované pre message_type iný ako 'text')
-    consumes:
-      - multipart/form-data
+        schema:
+          type: object
+          required:
+            - sender_user_id
+            - recipient_chat_id
+            - content
+          properties:
+            sender_user_id:
+              type: integer
+              example: 3
+            recipient_chat_id:
+              type: integer
+              example: 7
+            content:
+              type: string
+              example: "Ahoj, ako sa máš?"
     responses:
       201:
-        description: Správa úspešne odoslaná
+        description: Správa bola úspešne uložená a odoslaná
         schema:
           type: object
           properties:
             message:
               type: string
-              example: "Správa úspešne odoslaná"
-            message_id:
-              type: integer
-              example: 1
+              example: "Správa bola odoslaná"
+            data:
+              type: object
+              properties:
+                message_id:
+                  type: integer
+                sender_user_id:
+                  type: integer
+                recipient_chat_id:
+                  type: integer
+                content:
+                  type: string
+      400:
+        description: Chýbajúce údaje
       500:
-        description: Chyba pri odosielaní správy
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-              example: "Chyba pri odosielaní správy"
+        description: Chyba pri ukladaní správy
     """
-    message_type = request.form.get('message_type', 'text')
-    sender_user_id = request.form.get('sender_user_id')
-    recipient_chat_id = request.form.get('recipient_chat_id')
-    content = request.form.get('content')
+    data = request.get_json()
+    sender_user_id = data.get('sender_user_id')
+    recipient_chat_id = data.get('recipient_chat_id')
+    content = data.get('content')
 
-    if not sender_user_id or not recipient_chat_id:
-        return jsonify({"message": "Sender ID and recipient chat ID are required"}), 400
-
-    file_data = None
-    file_name = None
-    file_mimetype = None
+    if not sender_user_id or not recipient_chat_id or not content:
+        return jsonify({'message': 'Chýbajúce údaje'}), 400
 
     try:
-        if 'file' in request.files and request.files['file'].filename:
-            file = request.files['file']
-            file_data = get_binary_file_data(file)
-            file_name = file.filename
-            file_mimetype = file.content_type
-
         with connection:
             with connection.cursor() as cursor:
                 cursor.execute("""
-                    SELECT membership_id FROM chat_members
-                    WHERE chat_id = %s AND member_id = %s
-                """, (recipient_chat_id, sender_user_id))
+                    INSERT INTO messages (sender_user_id, recipient_chat_id, content)
+                    VALUES (%s, %s, %s)
+                    RETURNING message_id, sender_user_id, recipient_chat_id, content
+                """, (sender_user_id, recipient_chat_id, content))
 
-                cursor.execute("""
-                    INSERT INTO messages (sender_user_id, recipient_chat_id, message_type, content, file_data, file_name, file_mimetype)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    RETURNING message_id
-                """, (sender_user_id, recipient_chat_id, message_type, content, file_data, file_name, file_mimetype))
+                message = cursor.fetchone()
 
-                message_id = cursor.fetchone()[0]
+                socketio.emit('new_message', {
+                    'message_id': message[0],
+                    'sender_user_id': message[1],
+                    'recipient_chat_id': message[2],
+                    'content': message[3]
+                }, room=f"chat_{recipient_chat_id}")
 
                 return jsonify({
-                    "message": "Správa úspešne odoslaná",
-                    "message_id": message_id
+                    'message': 'Správa bola odoslaná',
+                    'data': {
+                        'message_id': message[0],
+                        'sender_user_id': message[1],
+                        'recipient_chat_id': message[2],
+                        'content': message[3]
+                    }
                 }), 201
-
-    except Exception as error:
-        return jsonify({"message": f"Chyba pri odosielaní správy: {str(error)}"}), 500
+    except Exception as e:
+        return jsonify({'message': f'Chyba pri ukladaní správy: {str(e)}'}), 500
 
 @app.route('/chats/<int:chat_id>/messages', methods=['GET'])
 def get_chat_messages(chat_id):
@@ -1336,3 +1399,46 @@ def get_file(message_id):
 
     except Exception as error:
         return jsonify({"message": f"Chyba pri získavaní správy/súboru: {str(error)}"}), 500
+
+@socketio.on('send_message')
+def handle_send_message(data):
+    print("Prijatá správa cez WebSocket:", data)
+
+    sender_user_id = data.get("sender_user_id")
+    recipient_chat_id = data.get("recipient_chat_id")
+    content = data.get("content")
+    message_type = data.get("message_type", "text")
+
+    if not sender_user_id or not recipient_chat_id or not content:
+        emit("error", {"message": "Chýbajúce povinné polia"})
+        return
+
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO messages (sender_user_id, recipient_chat_id, message_type, content)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING message_id, sender_user_id, recipient_chat_id, message_type, content;
+                """, (sender_user_id, recipient_chat_id, message_type, content))
+
+                new_message = cursor.fetchone()
+                message_dict = {
+                    "message_id": new_message[0],
+                    "sender_user_id": new_message[1],
+                    "recipient_chat_id": new_message[2],    
+                    "message_type": new_message[3],
+                    "content": new_message[4]
+                }
+
+                # Pripojíme klienta do miestnosti podľa chat_id
+                join_room(f"chat_{recipient_chat_id}")
+                emit("new_message", message_dict, room=f"chat_{recipient_chat_id}", broadcast=False)
+
+    except Exception as e:
+        print("Chyba pri ukladaní správy:", str(e))
+        emit("error", {"message": "Nepodarilo sa uložiť správu"})
+
+
+if __name__ == '__main__':
+    socketio.run(app, host='0.0.0.0', port=5000)
