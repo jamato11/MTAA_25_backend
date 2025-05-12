@@ -1426,7 +1426,7 @@ def handle_send_message(data):
                 message_dict = {
                     "message_id": new_message[0],
                     "sender_user_id": new_message[1],
-                    "recipient_chat_id": new_message[2],    
+                    "recipient_chat_id": new_message[2],
                     "message_type": new_message[3],
                     "content": new_message[4]
                 }
@@ -1441,4 +1441,4 @@ def handle_send_message(data):
 
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000)
+    socketio.run(app, host='192.168.0.105', port=5000, allow_unsafe_werkzeug=True)
