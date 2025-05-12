@@ -86,6 +86,7 @@ def init_db():
             cursor.execute(CREATE_CHAT_MEMBERS_TABLE)
             cursor.execute(CREATE_MESSAGES_TABLE)
     print("Databáza a tabuľky boli úspešne vytvorené.")
+    print(__name__)
 
 with app.app_context():
     init_db()
@@ -1441,4 +1442,5 @@ def handle_send_message(data):
 
 
 if __name__ == '__main__':
-    socketio.run(app, host='192.168.0.105', port=5000, allow_unsafe_werkzeug=True)
+    print("Socket running")
+    socketio.run(app, host='147.175.160.157', port=5000, allow_unsafe_werkzeug=True)
